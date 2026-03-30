@@ -253,7 +253,7 @@ tbody td{padding:11px 16px;font-size:13px}
 
 <script>
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzcUr0BWGknytYiO_ERs92SffZHtXOr48vjR_E0lGaYYU4sK7VxqtaHM-3m-0OZFc6t6Q/exec';
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzIX5_S_2dRMEsK6Ta356bXD4w9VvAtm8Th5eZP8-x3uNQBBe43kSnGmb1xM1_hJXAnTQ/exec';
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let RAW = [];
@@ -264,67 +264,81 @@ let chartMonthly = null, chartBalance = null, chartPersona = null;
 let activePreset = '2025';
 const MESES = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
-// ─── LOAD DATA via JSONP (resuelve CORS al abrir como archivo local) ──────────
-function loadData() {
+// ─── PARSE RAW ROW ────────────────────────────────────────────────────────────
+function parseRow(r) {
+  const fecha = r['PAGOS'] || r['Fecha'] || '';
+  let rawDate = '';
+  if (typeof fecha === 'string') rawDate = fecha.slice(0,10);
+  else rawDate = String(fecha).slice(0,10);
+  // Fix ISO dates: "2024-08-28T06:00:00.000Z" → "2024-08-28"
+  if (rawDate.length > 10) rawDate = rawDate.slice(0,10);
+
+  return {
+    fecha: rawDate,
+    quien: String(r['Quién'] || r['Quien'] || '').trim(),
+    monto: parseFloat(r['MONTO'] || r['Monto'] || 0),
+    adonde: String(r['A DONDE'] || r['A_DONDE'] || '').trim(),
+    concepto: String(r['CONCEPTO'] || '').trim(),
+    pagado: String(r['¿PAGADO?'] || r['PAGADO'] || '').trim(),
+    mes: parseInt(r['MES'] || r['Mes'] || 0),
+    año: parseInt(r['AÑO'] || r['Año'] || r['AÑO '] || 0),
+    comentarios: String(r['Comentarios'] || r['COMENTARIOS'] || '').trim()
+  };
+}
+
+function processData(json) {
+  if (!json.data || !Array.isArray(json.data)) throw new Error('Formato inesperado');
+
+  RAW = json.data.map(parseRow).filter(r => r.año >= 2024 && r.año <= 2030 && r.fecha);
+
+  const quienes = [...new Set(RAW.map(r=>r.quien).filter(Boolean))].sort();
+  const selQ = document.getElementById('sel-quien');
+  selQ.innerHTML = '<option value="">Todos</option>' +
+    quienes.map(q=>`<option value="${q}">${q}</option>`).join('');
+
+  const now = new Date();
+  document.getElementById('sync-time').textContent =
+    now.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) + ' · ' +
+    now.toLocaleDateString('es-MX',{day:'2-digit',month:'short'});
+
+  document.getElementById('error-banner').classList.remove('show');
+  document.getElementById('loader').classList.add('hidden');
+  applyFilters();
+}
+
+// ─── LOAD DATA — intenta fetch primero, cae a JSONP si falla (file://) ────────
+async function loadData() {
   const btn = document.getElementById('btn-refresh');
   btn.classList.add('loading');
 
-  // Limpia callback anterior si existe
+  // — Intento 1: fetch normal (funciona desde servidor / GitHub Pages) —
+  try {
+    const res = await fetch(SCRIPT_URL);
+    if (res.ok) {
+      const json = await res.json();
+      processData(json);
+      btn.classList.remove('loading');
+      return;
+    }
+  } catch(_) { /* CORS en file://, cae a JSONP */ }
+
+  // — Intento 2: JSONP (funciona al abrir como archivo local) —
   if (window.__jsonpTimeout) clearTimeout(window.__jsonpTimeout);
-  const old = document.getElementById('jsonp-script');
+  const old = document.getElementById('__jsonp');
   if (old) old.remove();
 
-  // Timeout de seguridad (8 seg)
   window.__jsonpTimeout = setTimeout(() => {
     document.getElementById('error-banner').classList.add('show');
     document.getElementById('error-detail').textContent =
-      'Tiempo de espera agotado. Verifica que el script esté publicado como "Cualquier persona".';
+      'Tiempo agotado. Asegúrate de que el Apps Script esté publicado para "Cualquier persona".';
     document.getElementById('loader').classList.add('hidden');
     btn.classList.remove('loading');
-  }, 8000);
+  }, 10000);
 
-  // Callback global que el script invocará
-  window.__onScriptData = function(json) {
+  window.__onData = function(json) {
     clearTimeout(window.__jsonpTimeout);
-    try {
-      if (!json.data || !Array.isArray(json.data)) throw new Error('Formato inesperado');
-
-      RAW = json.data.map(r => {
-        const fecha = r['PAGOS'] || r['Fecha'] || '';
-        let rawDate = '';
-        if (typeof fecha === 'string') rawDate = fecha.slice(0,10);
-        else if (fecha instanceof Date) rawDate = fecha.toISOString().slice(0,10);
-        else rawDate = String(fecha).slice(0,10);
-
-        return {
-          fecha: rawDate,
-          quien: String(r['Quién'] || r['Quien'] || '').trim(),
-          monto: parseFloat(r['MONTO'] || r['Monto'] || 0),
-          adonde: String(r['A DONDE'] || r['A_DONDE'] || '').trim(),
-          concepto: String(r['CONCEPTO'] || '').trim(),
-          pagado: String(r['¿PAGADO?'] || r['PAGADO'] || '').trim(),
-          mes: parseInt(r['MES'] || r['Mes'] || 0),
-          año: parseInt(r['AÑO'] || r['Año'] || r['AÑO '] || 0),
-          comentarios: String(r['Comentarios'] || r['COMENTARIOS'] || '').trim()
-        };
-      }).filter(r => r.año >= 2024 && r.año <= 2030 && r.fecha);
-
-      // Quién dinámico
-      const quienes = [...new Set(RAW.map(r=>r.quien).filter(Boolean))].sort();
-      const selQ = document.getElementById('sel-quien');
-      selQ.innerHTML = '<option value="">Todos</option>' +
-        quienes.map(q=>`<option value="${q}">${q}</option>`).join('');
-
-      const now = new Date();
-      document.getElementById('sync-time').textContent =
-        now.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) + ' · ' +
-        now.toLocaleDateString('es-MX',{day:'2-digit',month:'short'});
-
-      document.getElementById('error-banner').classList.remove('show');
-      document.getElementById('loader').classList.add('hidden');
-      applyFilters();
-
-    } catch(e) {
+    try { processData(json); }
+    catch(e) {
       document.getElementById('error-banner').classList.add('show');
       document.getElementById('error-detail').textContent = e.message;
       document.getElementById('loader').classList.add('hidden');
@@ -332,15 +346,14 @@ function loadData() {
     btn.classList.remove('loading');
   };
 
-  // Inyecta el script JSONP
   const s = document.createElement('script');
-  s.id = 'jsonp-script';
-  s.src = SCRIPT_URL + '?callback=__onScriptData';
+  s.id = '__jsonp';
+  s.src = SCRIPT_URL + '?callback=__onData&t=' + Date.now();
   s.onerror = () => {
     clearTimeout(window.__jsonpTimeout);
     document.getElementById('error-banner').classList.add('show');
     document.getElementById('error-detail').textContent =
-      'No se pudo cargar el script. Verifica la URL y los permisos.';
+      'Error al cargar el script. Revisa la URL y que el Apps Script tenga acceso público.';
     document.getElementById('loader').classList.add('hidden');
     btn.classList.remove('loading');
   };
